@@ -16,7 +16,7 @@ jobs:
     - name: autogen
       run: ./autogen.sh
     - name: configure
-      run: ./configure
+      run: ./configure CPPFLAGS='-I/usr/include/jsoncpp'
     - name: make
       run: make
     - name: make check
