@@ -24,4 +24,4 @@ jobs:
     - name: make check
       run: make check
     - name: make distcheck
-      run: make distcheck
+      run: make distcheck CPPFLAGS='-I/usr/include/jsoncpp'
