@@ -1,4 +1,6 @@
 bin_PROGRAMS = feednix
+configdir = /etc/xdg/feednix
+config_DATA = ../config.json
 
 feednix_SOURCES = \
 	CursesProvider.cpp \
@@ -7,6 +9,6 @@ feednix_SOURCES = \
 	FeedlyProvider.h \
 	main.cpp
 
-feednix_CPPFLAGS = -DDEBUG -std=c++17 -Wall
+feednix_CPPFLAGS = -DDEBUG -std=c++17 -Wall $(AM_CFLAGS)
 AM_CFLAGS = -lcurl -ljsoncpp -lmenuw -lpanelw -lncursesw
 AM_LIBS = curl jsoncpp menuw panelw ncursesw
