@@ -5,12 +5,12 @@ An ncurses based client for [Feedly](http://feedly.com/).
 
 ## Install
 
-First run `autogen.sh` script.
+First run `configure.sh` script.
 
 Then run your standard make commands. Here is a one liner:
 
 ```sh
-./configure && make && sudo make install
+./configure.sh && make && sudo make install
 ```
 
 ### Ubuntu
@@ -21,32 +21,12 @@ Thank you @chrisjohnston for mentioning the following dependencies for Ubuntu:
 sudo apt-get install dh-autoreconf libjsoncpp-dev libcurl4-gnutls-dev libncurses5-dev
 ```
 
-`make` may give you the following error.
-
-```
-CursesProvider.cpp:18:10: fatal error: json/json.h: No such file or directory
-18 | #include <json/json.h>
-   |          ^~~~~~~~~~~~~
-```
-
-Give the following `CPPFLAGS` value when you `configure` to work around it.
-
-```sh
-./configure CPPFLAGS='-I/usr/include/jsoncpp'
-```
-
 ### macOS
 
 For macOS with [Homebrew](https://brew.sh), install the prerequisites with:
 
 ```sh
 brew install jsoncpp
-```
-
-Install to `/usr/local/bin` with the following:
-
-```sh
-./configure --prefix=/usr/local && make && make install
 ```
 
 ## Clarification on Sign In Method (PLEASE READ)

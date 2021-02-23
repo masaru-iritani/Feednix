@@ -42,6 +42,8 @@ void sighandler(int signum){
 
 void printUsage();
 
+static constexpr auto s_systemConfigPath = FEEDNIX_SYSTEM_CONFIG;
+
 int main(int argc, char **argv){
         signal(SIGINT, sighandler);
         signal(SIGTERM, sighandler);
