@@ -94,11 +94,27 @@ int main(int argc, char **argv){
 }
 
 void printUsage(){
-        std::cout << "Usage: feednix [OPTIONS]" << std::endl;
-        std::cout << "  An ncurses-based console client for Feedly written in C++" << std::endl;
-        std::cout << "\n Options:\n  -h        Display this help and exit\n  -v        Set curl to output in verbose mode during login" << std::endl;
-        std::cout << "\n Config:\n   Feednix uses a config file to set colors and\n   and the amount of posts to be retrived per\n   request." << std::endl;
-        std::cout << "\n   This file can be found and must be placed in:\n     $HOME/.config/feednix\n   A sample config can be found in /etc/feednix" << std::endl;
-        std::cout << "\n Author:\n   Copyright Jorge Martinez Hernandez <jorgemartinezhernandez@gmail.com>\n   Licensing information can be found in the source code" << std::endl;
-        std::cout << "\n Bugs:\n   Please report any bugs on Github <https://github.com/Jarkore/Feednix>" << std::endl;
+        std::cout << R"(
+Usage: feednix [OPTIONS]
+  An ncurses-based console client for Feedly written in C++
+
+ Options:
+  -c    Change the Feedly developer token
+  -h    Display this help and exit
+  -v    Set curl to output in verbose mode during login
+
+ Config:
+  Feednix uses a config file to set colors and
+  the amount of posts to be retrived per request.
+  This file can be found and must be placed in $HOME/.config/feednix.
+  A sample config can be found in /etc/feednix.
+
+Author:
+  Copyright Jorge Martinez Hernandez <jorgemartinezhernandez@gmail.com>
+  Licensing information can be found in the source code
+
+Bugs:
+   Please report any bugs on Github <https://github.com/Jarkore/Feednix>
+
+)";
 }

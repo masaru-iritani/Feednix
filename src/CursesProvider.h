@@ -10,8 +10,15 @@
 
 #include "FeedlyProvider.h"
 
-#define CTG_WIN_WIDTH 40
-#define VIEW_WIN_HEIGHT_PER 50
+constexpr auto CTG_WIN_WIDTH = 40U;
+constexpr auto VIEW_WIN_HEIGHT_PER = 50U;
+
+typedef struct{
+        unsigned int x;
+        unsigned int y;
+        unsigned int width;
+        unsigned int height;
+} WindowSize;
 
 class CursesProvider{
         public:
@@ -21,20 +28,41 @@ class CursesProvider{
                 ~CursesProvider();
         private:
                 FeedlyProvider feedly;
-                WINDOW *ctgWin, *postsWin, *viewWin, *ctgMenuWin, *postsMenuWin;
-                PANEL  *panels[3], *top;
+                WINDOW *ctgWin;
+                WINDOW *postsWin;
+                WINDOW *viewWin;
+                WINDOW *ctgMenuWin;
+                WINDOW *postsMenuWin;
+                WINDOW *statusWin;
+                WINDOW *infoWin;
+                PANEL* ctgPanel;
+                PANEL* postsPanel;
+                PANEL* viewPanel;
+                PANEL* statusPanel;
+                PANEL* infoPanel;
                 std::vector<ITEM*> ctgItems{};
                 std::vector<ITEM*> postsItems{};
                 MENU *ctgMenu, *postsMenu;
-                std::string lastEntryRead, statusLine[3];
+                std::string lastEntryRead;
                 std::chrono::time_point<std::chrono::steady_clock> lastPostSelectionTime{std::chrono::time_point<std::chrono::steady_clock>::max()};
                 std::chrono::seconds secondsToMarkAsRead;
                 std::string textBrowser;
+                std::string infoMessage;
                 const std::filesystem::path previewPath;
                 bool currentRank{};
                 unsigned int totalPosts{};
                 unsigned int numUnread{};
-                int viewWinHeightPer = VIEW_WIN_HEIGHT_PER, viewWinHeight = 0, ctgWinWidth = CTG_WIN_WIDTH;
+                int viewWinHeightPer = VIEW_WIN_HEIGHT_PER;
+                int viewWinHeight = 0;
+                int ctgWinWidth = CTG_WIN_WIDTH;
+                WindowSize ctgWinSize{};
+                WindowSize ctgMenuWinSize{};
+                WindowSize postsWinSize{};
+                WindowSize postsMenuWinSize{};
+                WindowSize viewWinSize{};
+                WindowSize statusWinSize{};
+                WindowSize infoWinSize{};
+                void calculateWindowSizes();
                 void clearCategoryItems();
                 void clearPostItems();
                 void createCategoriesMenu();
@@ -44,12 +72,14 @@ class CursesProvider{
                 void postsMenuCallback(ITEM* item, bool preview);
                 void markItemRead(ITEM* item);
                 void markItemReadAutomatically(ITEM* item);
-                void renderWindow(WINDOW *win, const char *label, int labelColor, bool highlight);
+                void renderWindow(WINDOW *win, const char *label, bool highlight);
                 void printInMiddle(WINDOW *win, int starty, int startx, int width, const char *string, chtype color);
                 void printPostMenuMessage(const std::string& message);
-                void clear_statusline();
-                void update_statusline(const char* update, const char* post, bool showCounter);
-                void update_infoline(const char* info);
+                void clearStatusLine();
+                void print(WINDOW* window, const std::string& s, size_t x, size_t n, short color);
+                void updateStatusLine(std::string statusMessage, std::string postTitle, bool showCounter);
+                void updateInfoLine(const std::string& info);
+                void refreshInfoLine();
                 int execute(const std::string& command, const std::string& arg);
 };
 

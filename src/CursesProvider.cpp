@@ -21,8 +21,8 @@
 
 #include "CursesProvider.h"
 
-#define POSTS_STATUSLINE "Enter: See Preview  A: mark all read  u: mark unread  r: mark read  = : change sort type s: mark saved  S: mark unsaved R: refresh  o: Open in plain-text  O: Open in Browser  F1: exit"
-#define CTG_STATUSLINE "Enter: Fetch Stream  A: mark all read  R: refresh  F1: exit"
+constexpr auto POSTS_STATUSLINE = "Enter: See Preview  A: mark all read  u: mark unread  r: mark read  = : change sort type s: mark saved  S: mark unsaved R: refresh  o: Open in plain-text  O: Open in Browser  F1: exit";
+constexpr auto CTG_STATUSLINE = "Enter: Fetch Stream  A: mark all read  R: refresh  F1: exit";
 
 #define HOME_PATH getenv("HOME")
 
@@ -30,10 +30,14 @@ namespace fs = std::filesystem;
 using namespace std::literals::string_literals;
 using PipeStream = std::unique_ptr<FILE, decltype(&pclose)>;
 
-static void throwIfError(int result, const std::string& action){
+static inline void throwIfError(int result, const std::string& action){
         if(result == ERR){
                 throw std::runtime_error("Failed to " + action);
         }
+}
+
+static inline unsigned int u(int x){
+        return (x > 0) ? static_cast<unsigned int>(x) : 0U;
 }
 
 CursesProvider::CursesProvider(const fs::path& tmpPath, bool verbose, bool change):
@@ -100,30 +104,21 @@ void CursesProvider::init(){
                 textBrowser.replace(0, 1, getenv("HOME"));
         }
 
-        if (ctgWinWidth == 0)
-                ctgWinWidth = CTG_WIN_WIDTH;
-        if (viewWinHeight == 0 && viewWinHeightPer == 0)
-                viewWinHeightPer = VIEW_WIN_HEIGHT_PER;
-        if (viewWinHeight == 0)
-                viewWinHeight = (unsigned int)(((LINES - 2) * viewWinHeightPer) / 100);
-
+        calculateWindowSizes();
+        statusWin = newwin(statusWinSize.height, statusWinSize.width, statusWinSize.y, statusWinSize.x);
+        infoWin = newwin(infoWinSize.height, infoWinSize.width, infoWinSize.y, infoWinSize.x);
+        viewWin = newwin(viewWinSize.height, viewWinSize.width, viewWinSize.y, viewWinSize.x);
         createCategoriesMenu();
         createPostsMenu();
 
-        viewWin = newwin(viewWinHeight, COLS - 2, (LINES - 2 - viewWinHeight), 1);
-
-        panels[0] = new_panel(ctgWin);
-        panels[1] = new_panel(postsWin);
-        panels[2] = new_panel(viewWin);
-
-        set_panel_userptr(panels[0], panels[1]);
-        set_panel_userptr(panels[1], panels[0]);
+        ctgPanel = new_panel(ctgWin);
+        postsPanel = new_panel(postsWin);
+        viewPanel = new_panel(viewWin);
+        statusPanel = new_panel(statusWin);
+        infoPanel = new_panel(infoWin);
 
         printPostMenuMessage("Loading...");
-        update_infoline(POSTS_STATUSLINE);
-
-        top = panels[1];
-        top_panel(top);
+        updateInfoLine(POSTS_STATUSLINE);
 
         update_panels();
         doupdate();
@@ -132,71 +127,100 @@ void CursesProvider::init(){
 }
 void CursesProvider::control(){
         int ch;
-        MENU* curMenu;
-        if(totalPosts == 0){
-                curMenu = ctgMenu;
-        }
-        else{
-                curMenu = postsMenu;
+        auto curMenu = postsMenu;
+        if(totalPosts > 0){
+                // Preview the first post.
                 changeSelectedItem(curMenu, REQ_FIRST_ITEM);
         }
 
         while((ch = getch()) != KEY_F(1) && ch != 'q'){
                 auto curItem = current_item(curMenu);
                 switch(ch){
-                        case 10:
+                        case 10: // Enter
                                 if((curMenu == ctgMenu) && (curItem != NULL)){
-                                        top = (PANEL *)panel_userptr(top);
-
-                                        update_statusline("[Updating stream]", "", false);
-
+                                        updateStatusLine("[Updating stream]", "", false);
                                         refresh();
                                         update_panels();
 
                                         ctgMenuCallback(item_name(curItem));
-
-                                        top_panel(top);
 
                                         if(numUnread == 0){
                                                 curMenu = ctgMenu;
                                         }
                                         else{
                                                 curMenu = postsMenu;
-                                                update_infoline(POSTS_STATUSLINE);
+                                                updateInfoLine(POSTS_STATUSLINE);
                                         }
                                 }
-                                else if((panel_window(top) == postsWin) && (curItem != NULL)){
-                                        postsMenuCallback(curItem, true);
+                                else if((curMenu == postsMenu) && (curItem != NULL)){
+                                        postsMenuCallback(curItem, true /*preview*/);
                                 }
 
                                 break;
-                        case 9:
+                        case 9: // Tab
                                 if(curMenu == ctgMenu){
                                         curMenu = postsMenu;
-
-                                        renderWindow(postsWin, "Posts", 1, true);
-                                        renderWindow(ctgWin, "Categories", 2, false);
-
-                                        update_infoline(POSTS_STATUSLINE);
-                                        refresh();
+                                        renderWindow(postsWin, "Posts", true);
+                                        renderWindow(ctgWin, "Categories", false);
+                                        updateInfoLine(POSTS_STATUSLINE);
                                 }
                                 else{
                                         curMenu = ctgMenu;
-                                        renderWindow(ctgWin, "Categories", 1, true);
-                                        renderWindow(postsWin, "Posts", 2, false);
-
-                                        update_infoline(CTG_STATUSLINE);
-
-                                        refresh();
+                                        renderWindow(ctgWin, "Categories", true);
+                                        renderWindow(postsWin, "Posts", false);
+                                        updateInfoLine(CTG_STATUSLINE);
                                 }
 
-                                top = (PANEL *)panel_userptr(top);
-                                top_panel(top);
+                                refresh();
                                 break;
+                        case KEY_RESIZE:{
+                                const auto m = [](PANEL* const panel, const WindowSize& r){
+                                        // Shrink the window tentatively to prevent the window
+                                        // from going beyond the screen boundary.
+                                        if(const auto window = panel_window(panel)){
+                                                if((r.width * r.height) > 0U){
+                                                        throwIfError(wresize(window, 1, 1), "minimize a window");
+                                                        throwIfError(replace_panel(panel, window), "replace the window for a panel");
+
+                                                        const auto moveErrorMessage = "move a panel to " + std::to_string(r.y) + ", " + std::to_string(r.x) + " (COLS = " + std::to_string(COLS) + ", LINES = " + std::to_string(LINES) + ")";
+                                                        throwIfError(move_panel(panel, r.y, r.x), moveErrorMessage);
+
+                                                        const auto resizeErrorMessage = "resize a window to " + std::to_string(r.height) + ", " + std::to_string(r.width);
+                                                        throwIfError(wresize(window, r.height, r.width), resizeErrorMessage);
+                                                        throwIfError(replace_panel(panel, window), "replace the window for a panel");
+                                                        throwIfError(show_panel(panel), "show a panel");
+                                                }
+                                                else{
+                                                        throwIfError(hide_panel(panel), "hide a panel");
+                                                }
+                                        }
+                                };
+
+                                calculateWindowSizes();
+                                m(ctgPanel, ctgWinSize);
+                                m(infoPanel, infoWinSize);
+                                m(postsPanel, postsWinSize);
+                                m(statusPanel, statusWinSize);
+                                m(viewPanel, viewWinSize);
+                                updateStatusLine("[Updated the screen size]", "", false);
+                                refreshInfoLine();
+                                //throwIfError(unpost_menu(postsMenu), "hide the menu");
+                                //throwIfError(set_menu_format(postsMenu, postsMenuWinSize.height, postsMenuWinSize.width), "resize the menu");
+                                //throwIfError(post_menu(postsMenu), "show the menu");
+                                renderWindow(postsWin, "Posts", curMenu == postsMenu);
+                                throwIfError(unpost_menu(ctgMenu), "hide the menu");
+                                throwIfError(set_menu_format(ctgMenu, ctgMenuWinSize.height, ctgMenuWinSize.width), "resize the menu");
+                                throwIfError(post_menu(ctgMenu), "show the menu");
+                                renderWindow(ctgWin, "Categories", curMenu == ctgMenu);
+                                throwIfError(wrefresh(ctgWin), "refresh the category window");
+                                throwIfError(wrefresh(ctgMenuWin), "refresh the category menu window");
+                                throwIfError(refresh(), "refresh the screen");
+                                break;
+                        }
                         case '=':
                                 if(auto currentCategoryItem = current_item(ctgMenu)){
                                         wclear(viewWin);
-                                        update_statusline("[Updating stream]", "", false);
+                                        updateStatusLine("[Updating stream]", "", false);
                                         refresh();
 
                                         currentRank = !currentRank;
@@ -219,7 +243,7 @@ void CursesProvider::control(){
                                 break;
                         case 'u':
                                 if((curMenu == postsMenu) && (curItem != NULL) && !item_opts(curItem)){
-                                        update_statusline("[Marking post unread]", NULL, true);
+                                        updateStatusLine("[Marking post unread]", "", true);
                                         refresh();
 
                                         std::string errorMessage;
@@ -233,7 +257,7 @@ void CursesProvider::control(){
                                                 errorMessage = e.what();
                                         }
 
-                                        update_statusline(errorMessage.c_str(), NULL, errorMessage.empty());
+                                        updateStatusLine(errorMessage, "", errorMessage.empty());
 
                                         // Prevent an article marked as unread explicitly
                                         // from being marked as read automatically.
@@ -249,7 +273,7 @@ void CursesProvider::control(){
                                 break;
                         case 's':
                                 if((curMenu == postsMenu) && (curItem != NULL)){
-                                        update_statusline("[Marking post saved]", NULL, true);
+                                        updateStatusLine("[Marking post saved]", "", true);
                                         refresh();
 
                                         std::string errorMessage;
@@ -260,13 +284,13 @@ void CursesProvider::control(){
                                                 errorMessage = e.what();
                                         }
 
-                                        update_statusline(errorMessage.c_str(), NULL, errorMessage.empty());
+                                        updateStatusLine(errorMessage, "", errorMessage.empty());
                                 }
 
                                 break;
                         case 'S':
                                 if((curMenu == postsMenu) && (curItem != NULL)){
-                                        update_statusline("[Marking post Unsaved]", NULL, true);
+                                        updateStatusLine("[Marking post Unsaved]", "", true);
                                         refresh();
 
                                         std::string errorMessage;
@@ -277,14 +301,14 @@ void CursesProvider::control(){
                                                 errorMessage = e.what();
                                         }
 
-                                        update_statusline(errorMessage.c_str(), NULL, errorMessage.empty());
+                                        updateStatusLine(errorMessage, "", errorMessage.empty());
                                 }
 
                                 break;
                         case 'R':
                                 if(auto currentCategoryItem = current_item(ctgMenu)){
                                         wclear(viewWin);
-                                        update_statusline("[Updating stream]", "", false);
+                                        updateStatusLine("[Updating stream]", "", false);
                                         refresh();
 
                                         ctgMenuCallback(item_name(currentCategoryItem));
@@ -293,7 +317,7 @@ void CursesProvider::control(){
                                 break;
                         case 'o':
                                 if((curMenu == postsMenu) && (curItem != NULL)){
-                                        postsMenuCallback(curItem, false);
+                                        postsMenuCallback(curItem, false /*preview*/);
                                 }
 
                                 break;
@@ -315,7 +339,7 @@ void CursesProvider::control(){
                                                 markItemRead(curItem);
                                         }
                                         catch(const std::exception& e){
-                                                update_statusline(e.what(), NULL /*post*/, false /*showCounter*/);
+                                                updateStatusLine(e.what(), "" /*post*/, false /*showCounter*/);
                                         }
                                 }
 
@@ -327,7 +351,7 @@ void CursesProvider::control(){
                                         char ctg[200];
                                         echo();
 
-                                        clear_statusline();
+                                        clearStatusLine();
                                         attron(COLOR_PAIR(4));
                                         mvprintw(LINES - 2, 0, "[ENTER FEED]:");
                                         mvgetnstr(LINES-2, strlen("[ENTER FEED]") + 1, feed, 200);
@@ -353,7 +377,7 @@ void CursesProvider::control(){
                                         noecho();
                                         clrtoeol();
 
-                                        update_statusline("[Adding subscription]", NULL, true);
+                                        updateStatusLine("[Adding subscription]", "", true);
                                         refresh();
 
                                         std::string errorMessage;
@@ -366,14 +390,14 @@ void CursesProvider::control(){
                                                 }
                                         }
 
-                                        update_statusline(errorMessage.c_str(), NULL, errorMessage.empty());
+                                        updateStatusLine(errorMessage, "", errorMessage.empty());
                                 }
 
                                 break;
                         case 'A':
                                 if(auto currentCategoryItem = current_item(ctgMenu)){
                                         wclear(viewWin);
-                                        update_statusline("[Marking category read]", "", true);
+                                        updateStatusLine("[Marking category read]", "", true);
                                         refresh();
 
                                         std::string errorMessage;
@@ -381,7 +405,7 @@ void CursesProvider::control(){
                                                 feedly.markCategoriesRead(item_description(currentCategoryItem), lastEntryRead);
                                         }
                                         catch(const std::exception& e){
-                                                update_statusline(errorMessage.c_str(), NULL, errorMessage.empty());
+                                                updateStatusLine(errorMessage, "", errorMessage.empty());
                                         }
 
                                         ctgMenuCallback(item_name(currentCategoryItem));
@@ -389,6 +413,10 @@ void CursesProvider::control(){
                                 }
 
                                 break;
+                         default:{
+                                updateStatusLine("[Unsupported key binding: " + std::to_string(ch) + "]", "", false /*showCounter*/);
+                                break;
+                         }
                 }
 
                 update_panels();
@@ -396,6 +424,47 @@ void CursesProvider::control(){
         }
 
         markItemReadAutomatically(current_item(postsMenu));
+}
+void CursesProvider::calculateWindowSizes(){
+        const auto actualInfoWinHeight = (LINES >= 1) ? 1U : 0U;
+        infoWinSize = {0U, u(LINES - 1), u(COLS), actualInfoWinHeight};
+
+        const auto actualStatusWinHeight = (LINES >= 2) ? 1U : 0U;
+        statusWinSize = {0U, u(LINES - 2), u(COLS), actualStatusWinHeight};
+
+        const auto minCtgWinHeight = 5U;
+        const auto maxViewWinHeight = u(LINES - static_cast<int>(minCtgWinHeight + actualStatusWinHeight + actualInfoWinHeight));
+        auto desiredViewWinHeight = 0U;
+        if(viewWinHeight >= 0){
+                // Use the specified view window height if available.
+                desiredViewWinHeight = u(viewWinHeight);
+        }
+        else if((viewWinHeightPer >= 0) && (viewWinHeightPer <= 100)){
+                // Use the specified view window height ratio if available.
+                desiredViewWinHeight = u((LINES - 2) * viewWinHeightPer / 100);
+        }
+        else{
+                // Use the default view window height ratio.
+                desiredViewWinHeight = u((LINES - 2) * VIEW_WIN_HEIGHT_PER / 100);
+        }
+
+        const auto actualViewWinHeight = std::min(desiredViewWinHeight, maxViewWinHeight);
+        viewWinSize = {0U, u(LINES - actualViewWinHeight), u(COLS), actualViewWinHeight};
+
+        constexpr auto minCtgWinWidth = 3U;
+        constexpr auto minPostsWinWidth = 3U;
+        const auto maxCtgWinWidth = u(COLS - minPostsWinWidth);
+        const auto desiredCtgWinWidth = (ctgWinWidth >= 0) ? u(ctgWinWidth) : CTG_WIN_WIDTH;
+        const auto actualCtgWinWidth = (minCtgWinWidth > maxCtgWinWidth) ? 0U : std::clamp(desiredCtgWinWidth, minCtgWinWidth, maxCtgWinWidth);
+        const auto desiredCtgWinHeight = u(LINES - static_cast<int>(viewWinSize.height + statusWinSize.height + infoWinSize.height));
+        const auto actualCtgWinHeight = (desiredCtgWinHeight >= minCtgWinHeight) ? desiredCtgWinHeight : 0U;
+        ctgWinSize = {0U, 0U, actualCtgWinWidth, actualCtgWinHeight};
+        ctgMenuWinSize = {1U, 3U, u(actualCtgWinWidth - 2), u(actualCtgWinHeight - 4)};
+
+        const auto desiredPostsWinWidth = u(COLS - actualCtgWinWidth);
+        const auto actualPostsWinWidth = (desiredPostsWinWidth < minPostsWinWidth) ? 0U : desiredPostsWinWidth;
+        postsWinSize = {u(actualCtgWinWidth), 0U, u(actualPostsWinWidth), u(actualCtgWinHeight)};
+        postsMenuWinSize = {1U, 3U, u(actualPostsWinWidth - 2), u(actualCtgWinHeight - 4)};
 }
 void CursesProvider::createCategoriesMenu(){
         clearCategoryItems();
@@ -412,15 +481,14 @@ void CursesProvider::createCategoriesMenu(){
         }
         catch(const std::exception& e){
                 clearCategoryItems();
-                update_statusline(e.what(), NULL /*post*/, false /*showCounter*/);
+                updateStatusLine(e.what(), "" /*post*/, false /*showCounter*/);
         }
 
         ctgItems.push_back(NULL);
         ctgMenu = new_menu(ctgItems.data());
 
-        const auto ctgWinHeight = LINES - 2 - viewWinHeight;
-        ctgWin = newwin(ctgWinHeight, ctgWinWidth, 0, 0);
-        ctgMenuWin = derwin(ctgWin, (ctgWinHeight - 4), (ctgWinWidth - 2), 3, 1);
+        ctgWin = newwin(ctgWinSize.height, ctgWinSize.width, ctgWinSize.y, ctgWinSize.x);
+        ctgMenuWin = derwin(ctgWin, ctgMenuWinSize.height, ctgMenuWinSize.width, ctgMenuWinSize.y, ctgMenuWinSize.x);
         keypad(ctgWin, TRUE);
 
         set_menu_win(ctgMenu, ctgWin);
@@ -430,7 +498,7 @@ void CursesProvider::createCategoriesMenu(){
         set_menu_grey(ctgMenu, COLOR_PAIR(8));
         set_menu_mark(ctgMenu, "  ");
 
-        renderWindow(ctgWin, "Categories", 2, false);
+        renderWindow(ctgWin, "Categories", false);
 
         menu_opts_off(ctgMenu, O_SHOWDESC);
         menu_opts_on(ctgMenu, O_NONCYCLIC);
@@ -438,13 +506,10 @@ void CursesProvider::createCategoriesMenu(){
         post_menu(ctgMenu);
 }
 void CursesProvider::createPostsMenu(){
-        const auto height = LINES - 2 - viewWinHeight;
-        postsWin = newwin(height, 0, 0, ctgWinWidth);
+        postsWin = newwin(postsWinSize.height, postsWinSize.width, postsWinSize.y, postsWinSize.x);
         keypad(postsWin, TRUE);
 
-        const auto width = getmaxx(postsWin);
-        postsMenuWin = derwin(postsWin, height - 4, width - 2, 3, 1);
-
+        postsMenuWin = derwin(postsWin, postsWinSize.height - 4, postsWinSize.width - 2, 3, 1);
         postsMenu = new_menu(NULL);
         set_menu_win(postsMenu, postsWin);
         set_menu_sub(postsMenu, postsMenuWin);
@@ -453,7 +518,7 @@ void CursesProvider::createPostsMenu(){
         set_menu_grey(postsMenu, COLOR_PAIR(8));
         set_menu_mark(postsMenu, "*");
 
-        renderWindow(postsWin, "Posts", 1, true);
+        renderWindow(postsWin, "Posts", true);
 
         menu_opts_off(postsMenu, O_SHOWDESC);
 
@@ -461,12 +526,6 @@ void CursesProvider::createPostsMenu(){
 }
 void CursesProvider::ctgMenuCallback(const char* label){
         markItemReadAutomatically(current_item(postsMenu));
-
-        int startx, height, width;
-        [[maybe_unused]] int starty;
-
-        getmaxyx(postsWin, height, width);
-        getbegyx(postsWin, starty, startx);
 
         std::string errorMessage;
         clearPostItems();
@@ -488,12 +547,12 @@ void CursesProvider::ctgMenuCallback(const char* label){
         postsItems.push_back(NULL);
         unpost_menu(postsMenu);
         set_menu_items(postsMenu, postsItems.data());
-        set_menu_format(postsMenu, height - 4, 0);
+        set_menu_format(postsMenu, postsMenuWinSize.height, 0);
         post_menu(postsMenu);
 
-        update_statusline(errorMessage.c_str(), NULL, errorMessage.empty());
-        renderWindow(postsWin, "Posts", 1, true);
-        renderWindow(ctgWin, "Categories", 2, false);
+        updateStatusLine(errorMessage, "", errorMessage.empty());
+        renderWindow(postsWin, "Posts", true);
+        renderWindow(ctgWin, "Categories", false);
 
         if(totalPosts > 0){
                 lastEntryRead = item_description(postsItems.at(0));
@@ -538,12 +597,12 @@ void CursesProvider::changeSelectedItem(MENU* curMenu, int req){
                 wclear(viewWin);
                 mvwprintw(viewWin, 1, 1, content.c_str());
                 wrefresh(viewWin);
-                update_statusline(NULL, (postData.originTitle + " - " + postData.title).c_str(), true);
+                updateStatusLine("", postData.originTitle + " - " + postData.title, true /*showCounter*/);
 
                 update_panels();
         }
         catch (const std::exception& e){
-                update_statusline(e.what(), NULL /*post*/, false /*showCounter*/);
+                updateStatusLine(e.what(), "" /*post*/, false /*showCounter*/);
         }
 }
 void CursesProvider::postsMenuCallback(ITEM* item, bool preview){
@@ -566,7 +625,7 @@ void CursesProvider::postsMenuCallback(ITEM* item, bool preview){
 
         }
         catch (const std::exception& e){
-                update_statusline(e.what(), NULL /*post*/, false /*showCounter*/);
+                updateStatusLine(e.what(), "" /*post*/, false /*showCounter*/);
                 return;
         }
 
@@ -577,7 +636,7 @@ void CursesProvider::postsMenuCallback(ITEM* item, bool preview){
         }
         else{
                 const auto updateStatus = preview ? "Failed to preview the post" : "Failed to open the post";
-                update_statusline(updateStatus, NULL /*post*/, false /*showCounter*/);
+                updateStatusLine(updateStatus, "" /*post*/, false /*showCounter*/);
         }
 
         if(preview){
@@ -588,7 +647,7 @@ void CursesProvider::postsMenuCallback(ITEM* item, bool preview){
 void CursesProvider::markItemRead(ITEM* item){
         if(item_opts(item)){
                 item_opts_off(item, O_SELECTABLE);
-                update_statusline("[Marking post read]", NULL, true);
+                updateStatusLine("[Marking post read]", "", true);
                 refresh();
 
                 std::string errorMessage;
@@ -601,7 +660,7 @@ void CursesProvider::markItemRead(ITEM* item){
                         errorMessage = e.what();
                 }
 
-                update_statusline(errorMessage.c_str(), NULL, errorMessage.empty());
+                updateStatusLine(errorMessage, "", errorMessage.empty());
                 update_panels();
         }
 }
@@ -617,36 +676,38 @@ void CursesProvider::markItemReadAutomatically(ITEM* item){
 
         lastPostSelectionTime = now;
 }
-void CursesProvider::renderWindow(WINDOW *win, const char *label, int labelColor, bool highlight){
-        int startx, width;
-        [[maybe_unused]] int starty, height;
-
-        getbegyx(win, starty, startx);
-        getmaxyx(win, height, width);
-
+void CursesProvider::renderWindow(WINDOW *win, const char *label, bool highlight){
+        const auto width = getmaxx(win);
         mvwaddch(win, 2, 0, ACS_LTEE);
         mvwhline(win, 2, 1, ACS_HLINE, width - 2);
         mvwaddch(win, 2, width - 1, ACS_RTEE);
 
-        if(highlight){
-                wattron(win, COLOR_PAIR(labelColor));
-                box(win, 0, 0);
-                mvwaddch(win, 2, 0, ACS_LTEE);
-                mvwhline(win, 2, 1, ACS_HLINE, width - 2);
-                mvwaddch(win, 2, width - 1, ACS_RTEE);
-                printInMiddle(win, 1, 0, width, label, COLOR_PAIR(labelColor));
-                wattroff(win, COLOR_PAIR(labelColor));
-        }
-        else{
-                wattron(win, COLOR_PAIR(2));
-                box(win, 0, 0);
-                mvwaddch(win, 2, 0, ACS_LTEE);
-                mvwhline(win, 2, 1, ACS_HLINE, width - 2);
-                mvwaddch(win, 2, width - 1, ACS_RTEE);
-                printInMiddle(win, 1, 0, width, label, COLOR_PAIR(5));
-                wattroff(win, COLOR_PAIR(2));
-        }
+        const auto labelColor = highlight ? 1 : 2;
+        wattron(win, COLOR_PAIR(labelColor));
+        box(win, 0, 0);
+        mvwaddch(win, 2, 0, ACS_LTEE);
+        mvwhline(win, 2, 1, ACS_HLINE, width - 2);
+        mvwaddch(win, 2, width - 1, ACS_RTEE);
+        printInMiddle(win, 1, 0, width, label, COLOR_PAIR(labelColor));
+        wattroff(win, COLOR_PAIR(labelColor));
+}
+void CursesProvider::print(WINDOW* window, const std::string& s, size_t x, size_t n, short color){
+        if(!s.empty()){
+                const auto width = getmaxx(window);
+                throwIfError(width, "get the window width");
+                if(x < static_cast<size_t>(width)){
+                        if(color != 0){
+                                throwIfError(wattron(statusWin, COLOR_PAIR(color)), "set the color pair");
+                        }
 
+                        n = std::min(static_cast<size_t>(width - x), n);
+                        throwIfError(mvwprintw(window, 0, x, s.substr(0, n).c_str()), "print a message on a window");
+
+                        if(color != 0){
+                                throwIfError(wattroff(statusWin, COLOR_PAIR(color)), "set the color pair");
+                        }
+                }
+        }
 }
 void CursesProvider::printInMiddle(WINDOW *win, int starty, int startx, int width, const char *str, chtype color){
         int length, x, y;
@@ -678,44 +739,54 @@ void CursesProvider::printPostMenuMessage(const std::string& message){
         mvwprintw(postsMenuWin, y, x, message.c_str());
         wattroff(postsMenuWin, 1);
 }
-void CursesProvider::clear_statusline(){
-        move(LINES-2, 0);
-        clrtoeol();
+void CursesProvider::clearStatusLine(){
+        throwIfError(werase(statusWin), "clear the status line");
 }
-void CursesProvider::update_statusline(const char* update, const char* post, bool showCounter){
-        if (update != NULL)
-                statusLine[0] = std::string(update);
-        if (post != NULL)
-                statusLine[1] = std::string(post);
-        if (showCounter) {
+void CursesProvider::updateStatusLine(std::string statusMessage, std::string postTitle, bool showCounter){
+        clearStatusLine();
+
+        auto counter = std::string{};
+        if(showCounter){
                 const auto numRead = totalPosts - numUnread;
-                std::stringstream sstm;
-                sstm << "[" << numUnread << ":" << numRead << "/" << totalPosts << "]";
-                statusLine[2] = sstm.str();
-        } else {
-                statusLine[2] = std::string();
+                counter = "[" + std::to_string(numUnread) + ":" + std::to_string(numRead) + "/" + std::to_string(totalPosts);
         }
 
-        clear_statusline();
-        move(LINES - 2, 0);
-        clrtoeol();
-        attron(COLOR_PAIR(1));
-        mvprintw(LINES - 2, 0, statusLine[0].c_str());
-        attroff(COLOR_PAIR(1));
-        mvprintw(LINES - 2, statusLine[0].empty() ? 0 : (statusLine[0].length() + 1), statusLine[1].substr(0,
-                                COLS - statusLine[0].length() - statusLine[2].length() - 2).c_str());
-        attron(COLOR_PAIR(3));
-        mvprintw(LINES - 2, COLS - statusLine[2].length(), statusLine[2].c_str());
-        attroff(COLOR_PAIR(3));
-        refresh();
+        if(!statusMessage.empty()){
+                const auto n = u(COLS - counter.length() - 1);
+                throwIfError(wattron(statusWin, COLOR_PAIR(1)), "set the color pair 1");
+                throwIfError(mvwprintw(statusWin, 0, 0, statusMessage.substr(0, n).c_str()), "print the status message");
+                throwIfError(wattroff(statusWin, COLOR_PAIR(1)), "unset the color pair 1");
+        }
+
+        if(!postTitle.empty()){
+                const auto x = statusMessage.empty() ? 0 : (statusMessage.length() + 1);
+                const auto n = u(COLS - x - counter.length() - 1);
+                throwIfError(mvwprintw(statusWin, 0, x, postTitle.substr(0, n).c_str()), "print the post title");
+        }
+
+        if(!counter.empty()){
+                if(u(COLS) > counter.length()){
+                        const auto x = u(COLS - counter.length() - 1);
+                        throwIfError(wattron(statusWin, COLOR_PAIR(3)), "set the color pair 3");
+                        throwIfError(mvwprintw(statusWin, 0, x, counter.c_str()), "print the counter");
+                        throwIfError(wattroff(statusWin, COLOR_PAIR(3)), "unset the color pair 3");
+                }
+        }
+
+        throwIfError(refresh(), "refresh the screen");
         update_panels();
 }
-void CursesProvider::update_infoline(const char* info){
-        move(LINES-1, 0);
-        clrtoeol();
-        attron(COLOR_PAIR(5));
-        mvprintw(LINES - 1, 0, info);
-        attroff(COLOR_PAIR(5));
+void CursesProvider::updateInfoLine(const std::string& info){
+        infoMessage = info;
+        refreshInfoLine();
+}
+void CursesProvider::refreshInfoLine(){
+        throwIfError(werase(infoWin), "clear the info message");
+        if(const auto n = u(infoWinSize.width - 1); (n * infoWinSize.height) > 0){
+                throwIfError(wattron(infoWin, COLOR_PAIR(5)), "turn on an attribute");
+                throwIfError(mvwprintw(infoWin, 0, 0, infoMessage.substr(0, n).c_str()), "print the info message");
+                throwIfError(wattroff(infoWin, COLOR_PAIR(5)), "turn off an attribute");
+        }
 }
 int CursesProvider::execute(const std::string& command, const std::string& arg){
         throwIfError(def_prog_mode(), "make the program mode default");
@@ -771,14 +842,17 @@ void CursesProvider::clearPostItems(){
         postsItems.clear();
 }
 CursesProvider::~CursesProvider(){
-        if(ctgMenu != NULL){
-                unpost_menu(ctgMenu);
-                free_menu(ctgMenu);
+        for(const auto& panel : {ctgPanel, postsPanel, viewPanel, statusPanel, infoPanel}){
+                if(panel != NULL){
+                        del_panel(panel);
+                }
         }
 
-        if(postsMenu != NULL){
-                unpost_menu(postsMenu);
-                free_menu(postsMenu);
+        for(const auto& menu : {ctgMenu, postsMenu}){
+                if(menu != NULL){
+                        unpost_menu(menu);
+                        free_menu(menu);
+                }
         }
 
         clearCategoryItems();
